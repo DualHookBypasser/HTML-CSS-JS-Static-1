@@ -149,3 +149,10 @@ async function getUsername(cookie) {
 
 // Export for Vercel
 export default app;
+
+const PORT = process.env.PORT || 5000;
+
+// Start server if not being imported
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
+});
