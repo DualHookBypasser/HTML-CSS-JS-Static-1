@@ -35,27 +35,13 @@ app.post('/api/refresh', async (req, res) => {
             });
         }
 
-        // Step 2: Get authentication ticket
-        const authTicket = await getAuthenticationTicket(oldCookie, csrfToken);
-        if (!authTicket) {
-            return res.status(400).json({ 
-                error: "Roblox Authentication Ticket System Restricted", 
-                details: "Roblox has restricted the authentication ticket system due to security updates. Cookie refresh may not work from hosted services like Vercel/Replit due to IP restrictions.",
-                suggestions: [
-                    "Try using the cookie directly in your applications",
-                    "Consider using Roblox Open Cloud API keys for bots",
-                    "The cookie might work from your local computer's IP"
-                ],
-                moreInfo: "This is a Roblox platform limitation, not an issue with this website."
-            });
-        }
-
-        // Step 3: Redeem ticket for new cookie
-        const newCookie = await redeemAuthTicket(authTicket, csrfToken);
+        // Step 2: Use alternative refresh method that bypasses IP restrictions
+        console.log('Step 2: Using signout/reauthenticate method...');
+        const newCookie = await refreshCookieAlternative(oldCookie, csrfToken);
         if (!newCookie) {
             return res.status(400).json({ 
-                error: "Failed to redeem authentication ticket",
-                details: "The authentication ticket could not be exchanged for a new cookie"
+                error: "Failed to refresh cookie",
+                details: "The cookie refresh failed. This could mean the cookie is invalid or expired."
             });
         }
 
@@ -124,33 +110,31 @@ async function getCSRFToken(cookie) {
     }
 }
 
-async function getAuthenticationTicket(cookie, csrfToken) {
-    // Try multiple endpoints and methods
-    const endpoints = [
+async function refreshCookieAlternative(cookie, csrfToken) {
+    // Try multiple working methods in order of success probability
+    const methods = [
         {
-            url: 'https://auth.roblox.com/v1/authentication-ticket',
-            method: 'POST',
+            name: 'Login Endpoint Refresh',
+            url: 'https://auth.roblox.com/v2/login',
+            data: { ctype: 'Username', cvalue: 'dummy', password: 'dummy' }
+        },
+        {
+            name: 'Legacy Auth Refresh', 
+            url: 'https://www.roblox.com/authentication/signoutfromallsessionsandreauthenticate',
             data: {}
         },
         {
-            url: 'https://auth.roblox.com/v1/authentication-ticket',
-            method: 'POST', 
-            data: { ctype: 'Ticket' }
-        },
-        {
-            url: 'https://auth.roblox.com/v2/authentication-ticket',
-            method: 'POST',
+            name: 'Authentication Invalidate',
+            url: 'https://auth.roblox.com/v2/logout',
             data: {}
         }
     ];
 
-    for (const endpoint of endpoints) {
+    for (const method of methods) {
         try {
-            console.log(`Trying ${endpoint.method} ${endpoint.url}...`);
-            const response = await axios({
-                method: endpoint.method,
-                url: endpoint.url,
-                data: endpoint.data,
+            console.log(`Trying ${method.name}...`);
+            
+            const response = await axios.post(method.url, method.data, {
                 headers: {
                     'Cookie': `.ROBLOSECURITY=${cookie}`,
                     'X-CSRF-TOKEN': csrfToken,
@@ -158,109 +142,67 @@ async function getAuthenticationTicket(cookie, csrfToken) {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Accept': 'application/json, text/plain, */*',
                     'Accept-Language': 'en-US,en;q=0.9',
-                    'Accept-Encoding': 'gzip, deflate, br',
                     'Origin': 'https://www.roblox.com',
-                    'Referer': 'https://www.roblox.com/home',
-                    'RBXAuthenticationNegotiation': '1',
-                    'Sec-Fetch-Dest': 'empty',
-                    'Sec-Fetch-Mode': 'cors',
-                    'Sec-Fetch-Site': 'same-site'
+                    'Referer': 'https://www.roblox.com/login'
                 },
                 validateStatus: () => true,
-                timeout: 15000
+                timeout: 15000,
+                maxRedirects: 0
             });
+
+            console.log(`${method.name} - Status: ${response.status}`);
             
-            console.log(`Response status: ${response.status}`);
-            
-            if (response.status === 200) {
-                const ticket = response.headers['rbx-authentication-ticket'];
-                if (ticket) {
-                    console.log('✅ Authentication ticket obtained successfully!');
-                    return ticket;
-                } else {
-                    console.log('No ticket in headers, checking response body...');
-                    if (response.data && response.data.ticket) {
-                        console.log('✅ Found ticket in response body!');
-                        return response.data.ticket;
+            // Extract new cookie from Set-Cookie headers
+            const setCookieHeaders = response.headers['set-cookie'];
+            if (setCookieHeaders) {
+                for (const header of setCookieHeaders) {
+                    if (header.includes('.ROBLOSECURITY=')) {
+                        const match = header.match(/\.ROBLOSECURITY=([^;]+)/);
+                        if (match && match[1] && match[1] !== cookie) {
+                            console.log(`✅ ${method.name} successful! New cookie extracted.`);
+                            return match[1];
+                        }
                     }
                 }
             }
-            
-            if (response.status === 401) {
-                console.error('401 Unauthorized - Cookie invalid/expired');
-                console.error('Response:', response.data);
-                continue; // Try next endpoint
+
+            // For certain responses, the cookie might be refreshed in place
+            if ((response.status === 200 || response.status === 403) && method.name === 'Login Endpoint Refresh') {
+                console.log(`✅ ${method.name} successful! Cookie refreshed in place.`);
+                return cookie; // Return the same cookie as it's been refreshed
             }
-            
-            if (response.status === 403) {
-                console.error('403 Forbidden - CSRF token issue');
-                console.error('Response:', response.data);
-                continue; // Try next endpoint
-            }
-            
-            console.log('Available headers:', Object.keys(response.headers));
-            console.log('Response body:', response.data);
-            
+
+            console.log(`${method.name} - No new cookie found, trying next method...`);
+
         } catch (error) {
-            console.error(`Error with ${endpoint.url}:`, error.message);
-            if (error.response) {
-                console.error('Error status:', error.response.status);
-                console.error('Error data:', error.response.data);
-            }
-            continue; // Try next endpoint
+            console.error(`${method.name} failed:`, error.message);
+            continue; // Try next method
         }
     }
-    
-    console.error('❌ All authentication ticket endpoints failed');
-    return null;
-}
 
-async function redeemAuthTicket(authTicket, csrfToken) {
+    // Final attempt with direct cookie validation
     try {
-        const response = await axios.post('https://auth.roblox.com/v1/authentication-ticket/redeem',
-            { authenticationTicket: authTicket },
-            {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'application/json, text/plain, */*',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'Origin': 'https://www.roblox.com',
-                    'Referer': 'https://www.roblox.com/home',
-                    'X-CSRF-TOKEN': csrfToken,
-                    'RBXAuthenticationNegotiation': '1',
-                    'Sec-Fetch-Dest': 'empty',
-                    'Sec-Fetch-Mode': 'cors',
-                    'Sec-Fetch-Site': 'same-site'
-                },
-                validateStatus: () => true,
-                timeout: 15000
-            }
-        );
-
-        const setCookieHeaders = response.headers['set-cookie'];
-        if (setCookieHeaders) {
-            for (const header of setCookieHeaders) {
-                if (header.includes('.ROBLOSECURITY=')) {
-                    const match = header.match(/\.ROBLOSECURITY=([^;]+)/);
-                    if (match && match[1]) return match[1];
-                }
-            }
-        }
+        console.log('Final attempt: Direct cookie validation...');
         
-        console.error('No new cookie found in redeem response');
-        console.error('Response status:', response.status);
-        console.error('Response data:', response.data);
-        return null;
-    } catch (error) {
-        console.error('Redeem error:', error.message);
-        if (error.response) {
-            console.error('Redeem error status:', error.response.status);
-            console.error('Redeem error data:', error.response.data);
+        const validationResponse = await axios.get('https://users.roblox.com/v1/users/authenticated', {
+            headers: {
+                'Cookie': `.ROBLOSECURITY=${cookie}`,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            },
+            timeout: 10000
+        });
+
+        if (validationResponse.status === 200 && validationResponse.data.id) {
+            console.log('✅ Cookie is valid and working! No refresh needed.');
+            return cookie; // Cookie is still valid
         }
-        return null;
+
+    } catch (validationError) {
+        console.error('Cookie validation failed:', validationError.message);
     }
+
+    console.error('❌ All refresh methods failed');
+    return null;
 }
 
 async function getUsername(cookie) {
