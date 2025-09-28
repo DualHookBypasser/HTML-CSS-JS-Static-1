@@ -3,7 +3,7 @@ modules = ["web", "nodejs-20"]
 
 [nix]
 channel = "stable-24_11"
-packages = ["static-web-server"]
+packages = ["static-web-server", "jq"]
 
 [deployment]
 publicDir = "/"
@@ -55,7 +55,7 @@ localPort = 5000
 externalPort = 80
 
 [[ports]]
-localPort = 38719
+localPort = 39657
 externalPort = 3000
 
 [agent]
