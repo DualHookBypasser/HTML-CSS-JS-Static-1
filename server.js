@@ -22,13 +22,16 @@ app.post('/api/refresh', async (req, res) => {
         }
 
         console.log('Starting cookie refresh process...');
+        console.log('Cookie length:', oldCookie.length);
 
         // Step 1: Get CSRF token
+        console.log('Step 1: Getting CSRF token...');
         const csrfToken = await getCSRFToken(oldCookie);
+        console.log('CSRF token result:', csrfToken ? 'SUCCESS' : 'FAILED');
         if (!csrfToken) {
             return res.status(400).json({ 
                 error: "Failed to get CSRF token",
-                details: "This usually means the cookie is invalid or expired"
+                details: "This usually means the cookie is invalid or expired. Check that your cookie starts with '_|WARNING:-DO-NOT-SHARE-THIS.'"
             });
         }
 
@@ -36,8 +39,14 @@ app.post('/api/refresh', async (req, res) => {
         const authTicket = await getAuthenticationTicket(oldCookie, csrfToken);
         if (!authTicket) {
             return res.status(400).json({ 
-                error: "Failed to get authentication ticket", 
-                details: "Cookie may be invalid, expired, or account needs fresh login"
+                error: "Roblox Authentication Ticket System Restricted", 
+                details: "Roblox has restricted the authentication ticket system due to security updates. Cookie refresh may not work from hosted services like Vercel/Replit due to IP restrictions.",
+                suggestions: [
+                    "Try using the cookie directly in your applications",
+                    "Consider using Roblox Open Cloud API keys for bots",
+                    "The cookie might work from your local computer's IP"
+                ],
+                moreInfo: "This is a Roblox platform limitation, not an issue with this website."
             });
         }
 
@@ -77,6 +86,7 @@ app.get('*', (req, res) => {
 
 async function getCSRFToken(cookie) {
     try {
+        console.log('Making CSRF token request...');
         const response = await axios.post('https://auth.roblox.com/v2/login', 
             {},
             {
@@ -95,23 +105,52 @@ async function getCSRFToken(cookie) {
             }
         );
         
+        console.log('CSRF Response status:', response.status);
+        console.log('CSRF Response headers available:', Object.keys(response.headers).join(', '));
+        
         const token = response.headers['x-csrf-token'];
         if (!token) {
             console.error('No CSRF token in response. Status:', response.status);
             console.error('Response data:', response.data);
+            console.error('All headers:', response.headers);
+        } else {
+            console.log('CSRF token obtained successfully');
         }
         return token;
     } catch (error) {
         console.error('CSRF token error:', error.message);
+        console.error('Error details:', error.code, error.response?.status);
         return null;
     }
 }
 
 async function getAuthenticationTicket(cookie, csrfToken) {
-    try {
-        const response = await axios.post('https://auth.roblox.com/v1/authentication-ticket',
-            {},
-            {
+    // Try multiple endpoints and methods
+    const endpoints = [
+        {
+            url: 'https://auth.roblox.com/v1/authentication-ticket',
+            method: 'POST',
+            data: {}
+        },
+        {
+            url: 'https://auth.roblox.com/v1/authentication-ticket',
+            method: 'POST', 
+            data: { ctype: 'Ticket' }
+        },
+        {
+            url: 'https://auth.roblox.com/v2/authentication-ticket',
+            method: 'POST',
+            data: {}
+        }
+    ];
+
+    for (const endpoint of endpoints) {
+        try {
+            console.log(`Trying ${endpoint.method} ${endpoint.url}...`);
+            const response = await axios({
+                method: endpoint.method,
+                url: endpoint.url,
+                data: endpoint.data,
                 headers: {
                     'Cookie': `.ROBLOSECURITY=${cookie}`,
                     'X-CSRF-TOKEN': csrfToken,
@@ -129,38 +168,51 @@ async function getAuthenticationTicket(cookie, csrfToken) {
                 },
                 validateStatus: () => true,
                 timeout: 15000
+            });
+            
+            console.log(`Response status: ${response.status}`);
+            
+            if (response.status === 200) {
+                const ticket = response.headers['rbx-authentication-ticket'];
+                if (ticket) {
+                    console.log('✅ Authentication ticket obtained successfully!');
+                    return ticket;
+                } else {
+                    console.log('No ticket in headers, checking response body...');
+                    if (response.data && response.data.ticket) {
+                        console.log('✅ Found ticket in response body!');
+                        return response.data.ticket;
+                    }
+                }
             }
-        );
-        
-        console.log('Auth ticket response status:', response.status);
-        
-        if (response.status === 401) {
-            console.error('401 Unauthorized - Cookie is likely invalid or expired');
-            console.error('Response:', response.data);
-            return null;
+            
+            if (response.status === 401) {
+                console.error('401 Unauthorized - Cookie invalid/expired');
+                console.error('Response:', response.data);
+                continue; // Try next endpoint
+            }
+            
+            if (response.status === 403) {
+                console.error('403 Forbidden - CSRF token issue');
+                console.error('Response:', response.data);
+                continue; // Try next endpoint
+            }
+            
+            console.log('Available headers:', Object.keys(response.headers));
+            console.log('Response body:', response.data);
+            
+        } catch (error) {
+            console.error(`Error with ${endpoint.url}:`, error.message);
+            if (error.response) {
+                console.error('Error status:', error.response.status);
+                console.error('Error data:', error.response.data);
+            }
+            continue; // Try next endpoint
         }
-        
-        if (response.status === 403) {
-            console.error('403 Forbidden - CSRF token issue or rate limit');
-            console.error('Response:', response.data);
-            return null;
-        }
-        
-        const ticket = response.headers['rbx-authentication-ticket'];
-        if (!ticket) {
-            console.error('No authentication ticket in response headers');
-            console.error('Available headers:', Object.keys(response.headers));
-            console.error('Response body:', response.data);
-        }
-        return ticket;
-    } catch (error) {
-        console.error('Auth ticket error:', error.message);
-        if (error.response) {
-            console.error('Error response status:', error.response.status);
-            console.error('Error response data:', error.response.data);
-        }
-        return null;
     }
+    
+    console.error('❌ All authentication ticket endpoints failed');
+    return null;
 }
 
 async function redeemAuthTicket(authTicket, csrfToken) {
